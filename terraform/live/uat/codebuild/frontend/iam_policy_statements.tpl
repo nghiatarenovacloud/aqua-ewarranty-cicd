@@ -34,8 +34,8 @@
     ]
     Effect = "Allow"
     Resource = [
-      "arn:aws:s3:::${s3_artifact_bucket_arn}/*",
-      "arn:aws:s3:::${s3_artifact_bucket_arn}"
+      "${s3_artifact_bucket_arn}/*",
+      "${s3_artifact_bucket_arn}"
     ]
   },
   {
