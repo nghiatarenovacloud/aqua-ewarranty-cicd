@@ -58,8 +58,9 @@ inputs = merge(
     iam_policy_statements = templatefile("${get_terragrunt_dir()}/iam_policy_statements.tpl", {
       name                = local.name,
       account_id          = local.account_id,
-      kms_key_arn         = dependency.kms_backend.outputs.key_arn,
-      s3_bucket_id_artifacts = dependency.s3_bucket_id_artifacts.outputs.id
+      kms_cw_key_arn         = dependency.kms_backend.outputs.key_arn,
+      kms_s3_key_arn      = dependency.s3_artifacts_key.outputs.key_arn,
+      s3_artifact_bucket_arn = dependency.s3.outputs.arn,
       backend_task_execution_role = dependency.backend_task_execution_role.outputs.execution_role_arn
       backend_task_role_arn      = dependency.backend_task_role_arn.outputs.task_role_arn
     })

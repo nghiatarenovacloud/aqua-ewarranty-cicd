@@ -54,12 +54,13 @@ inputs = merge(
   include.root.locals.common_resource_config,
   include.root.locals.codebuild_configs.frontend,
   {
-    # kms_key_arn           = dependency.kms_frontend.outputs.key_arn
+    kms_key_arn           = dependency.kms_frontend.outputs.key_arn
     iam_policy_statements = templatefile("${get_terragrunt_dir()}/iam_policy_statements.tpl", {
       name                = local.name,
       account_id          = local.account_id,
-      kms_key_arn         = dependency.kms_frontend.outputs.key_arn,
-      s3_bucket_id_artifacts = dependency.s3_bucket_id_artifacts.outputs.id
+      kms_cw_key_arn         = dependency.kms_frontend.outputs.key_arn,
+      kms_s3_key_arn      = dependency.s3_artifacts_key.outputs.key_arn,
+      s3_artifact_bucket_arn = dependency.s3.outputs.arn,
       frontend_task_execution_role = dependency.frontend_task_execution_role.outputs.execution_role_arn
       frontend_task_role_arn      = dependency.frontend_task_role_arn.outputs.task_role_arn
     })

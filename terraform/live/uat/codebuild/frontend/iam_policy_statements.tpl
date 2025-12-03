@@ -6,7 +6,10 @@
       "kms:Encrypt",
       "kms:GenerateDataKey"
     ]
-    Resource = ["${kms_key_arn}"]
+    Resource = [
+      "${kms_cw_key_arn}",
+      "${kms_s3_key_arn}"
+    ]
   },
   {
     Action = [
@@ -31,8 +34,8 @@
     ]
     Effect = "Allow"
     Resource = [
-      "arn:aws:s3:::${s3_bucket_id_artifacts}/*",
-      "arn:aws:s3:::${s3_bucket_id_artifacts}"
+      "arn:aws:s3:::${s3_artifact_bucket_arn}/*",
+      "arn:aws:s3:::${s3_artifact_bucket_arn}"
     ]
   },
   {
