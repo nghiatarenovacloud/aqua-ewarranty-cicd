@@ -1,0 +1,236 @@
+version: 0.2
+
+env:
+  variables:
+    ENV_NAME: "uat"
+    PROJECT_PREFIX: "aqua-cicd-app"
+    TASK_CPU: "256"
+    TASK_MEMORY: "512"
+    CONTAINER_NAME: "backend"
+    CONTAINER_PORT: "8080"
+    RDS_WAIT_ATTEMPTS: "20"
+    RDS_WAIT_INTERVAL: "300"
+
+cache:
+  paths:
+    - '/root/.nuget/packages/**/*'
+
+phases:
+  install:
+    runtime-versions:
+      dotnet: 8.0
+  pre_build:
+    commands:
+      - echo "Starting multi-service build process..."
+      - export AWS_DEFAULT_REGION=ap-southeast-1
+      - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - dotnet restore
+      - aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - BUILD_NUMBER=${CODEBUILD_BUILD_NUMBER:-1}
+      - IMAGE_TAG="v1.0.${BUILD_NUMBER}-${COMMIT_HASH}"
+      - echo "$IMAGE_TAG"
+  build:
+    commands:
+      - echo "Building multi-service application..."
+      - dotnet build --configuration Release --no-restore
+      - dotnet test --configuration Release --no-build --verbosity normal
+      
+      # Backend Service (.NET 8 API)
+      - echo "=== Building Backend Service ==="
+      - docker build -t backend:$IMAGE_TAG -f src/Backend/Dockerfile src/Backend/
+      - docker tag backend:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-backend:$IMAGE_TAG
+      
+      # Frontend Service (Next.js)
+      - echo "=== Building Frontend Service ==="
+      - |
+        if [ -f "src/Frontend/Dockerfile" ] && [ -f "src/Frontend/package.json" ]; then
+          docker build -t frontend:$IMAGE_TAG -f src/Frontend/Dockerfile src/Frontend/
+          docker tag frontend:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-frontend:$IMAGE_TAG
+        else
+          echo "Frontend service not found, skipping..."
+        fi
+      
+      # WSO2 Gateway Service (using base nginx image)
+      - echo "=== Building WSO2 Gateway Service ==="
+      - |
+        if [ -f "src/WSO2Gateway/Dockerfile" ] && [ -f "src/WSO2Gateway/nginx.conf" ]; then
+          docker build -t wso2-gateway:$IMAGE_TAG -f src/WSO2Gateway/Dockerfile src/WSO2Gateway/
+          docker tag wso2-gateway:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-wso2-gateway:$IMAGE_TAG
+        else
+          echo "WSO2 Gateway service files not found, using base nginx image..."
+          docker pull public.ecr.aws/nginx/nginx:alpine
+          docker tag public.ecr.aws/nginx/nginx:alpine ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-wso2-gateway:$IMAGE_TAG
+        fi
+      
+      # MongoDB Service (using base mongo image)
+      # - echo "=== Building MongoDB Service ==="
+      # - |
+      #   if [ -f "src/MongoDB/Dockerfile" ]; then
+      #     docker build -t mongodb:$IMAGE_TAG -f src/MongoDB/Dockerfile src/MongoDB/
+      #     docker tag mongodb:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-mongodb:$IMAGE_TAG
+      #   else
+      #     echo "MongoDB service not found, using base mongo image..."
+      #     docker pull public.ecr.aws/docker/library/mongo:7.0-alpine
+      #     docker tag public.ecr.aws/docker/library/mongo:7.0-alpine ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-mongodb:$IMAGE_TAG
+      #   fi
+      
+      # Redis Service (using base redis image)
+      # - echo "=== Building Redis Service ==="
+      # - |
+      #   if [ -f "src/Redis/Dockerfile" ]; then
+      #     docker build -t redis:$IMAGE_TAG -f src/Redis/Dockerfile src/Redis/
+      #     docker tag redis:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-redis:$IMAGE_TAG
+      #   else
+      #     echo "Redis service not found, using base redis image..."
+      #     docker pull public.ecr.aws/docker/library/redis:7.0-alpine
+      #     docker tag public.ecr.aws/docker/library/redis:7.0-alpine ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-redis:$IMAGE_TAG
+      #   fi
+      
+      # API Integration Service (using base nginx image)
+      # - echo "=== Building API Integration Service ==="
+      # - |
+      #   if [ -f "src/ApiIntegration/Dockerfile" ]; then
+      #     docker build -t api-integration:$IMAGE_TAG -f src/ApiIntegration/Dockerfile src/ApiIntegration/
+      #     docker tag api-integration:$IMAGE_TAG ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-api-integration:$IMAGE_TAG
+      #   else
+      #     echo "API Integration service not found, using base nginx image..."
+      #     docker pull public.ecr.aws/nginx/nginx:alpine
+      #     docker tag public.ecr.aws/nginx/nginx:alpine ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-api-integration:$IMAGE_TAG
+      #   fi
+      
+  post_build:
+    commands:
+      - echo "Deploying multi-service application..."
+      # Push Backend Service
+      - echo "=== Pushing Backend Service ==="
+      - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-backend:$IMAGE_TAG
+      - export IMAGE_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-backend:$IMAGE_TAG
+      
+      - echo "Waiting for RDS instances to be available..."
+      - export PG_IDENTIFIER="${PROJECT_PREFIX}-${ENV_NAME}-postgresql"
+      - export TASK_FAMILY="${PROJECT_PREFIX}-${ENV_NAME}-backend"
+      - export BACKEND_TASK_FAMILY="${PROJECT_PREFIX}-${ENV_NAME}-backend"
+      - export LOG_GROUP_NAME="${PROJECT_PREFIX}-${ENV_NAME}-backend"
+      - export BACKEND_TASK_EXECUTION_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-backend-execution-role"
+      - export BACKEND_TASK_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-backend-task-role"
+      - export TASK_EXECUTION_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-backend-execution-role"
+      - export TASK_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-backend-task-role"
+      - export S3_STATIC_BUCKET="${PROJECT_PREFIX}-${ENV_NAME}-static"
+      - echo "=== RESOLVED VALUES ==="
+      - echo "PostgreSQL Identifier:" $PG_IDENTIFIER
+      - echo "Task Family:" $TASK_FAMILY
+      - echo "Task Execution Role:" $TASK_EXECUTION_ROLE
+      - echo "Task Role:" $TASK_ROLE
+      - echo "S3 Static Bucket:" $S3_STATIC_BUCKET
+      # - echo "Wait Config:"
+      # - echo "$RDS_WAIT_ATTEMPTS attempts every $RDS_WAIT_INTERVAL seconds"
+      # - echo "========================"
+      # - |
+      #   for i in $(seq 1 $RDS_WAIT_ATTEMPTS); do
+      #     PG_STATUS=$(aws rds describe-db-instances --db-instance-identifier $PG_IDENTIFIER --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "not-found")
+      #     echo "RDS Status (attempt $i/$RDS_WAIT_ATTEMPTS): PostgreSQL=$PG_STATUS"
+      #     if [ "$PG_STATUS" = "available" ]; then
+      #       echo "PostgreSQL RDS instance is available"
+      #       break
+      #     fi
+      #     if [ $i -eq $RDS_WAIT_ATTEMPTS ]; then
+      #       echo "Warning: RDS instances not fully available after $((RDS_WAIT_ATTEMPTS * RDS_WAIT_INTERVAL / 60)) minutes"
+      #     fi
+      #     sleep $RDS_WAIT_INTERVAL
+      #   done
+      - echo "Fetching secret ARNs..."
+      - export POSTGRESQL_SECRET_ARN=$(aws secretsmanager list-secrets --query "SecretList[?contains(Name, '${PROJECT_PREFIX}-${ENV_NAME}-postgresql')].ARN" --output text || echo "")
+      - export SQLSERVER_SECRET_ARN=$(aws secretsmanager list-secrets --query "SecretList[?contains(Name, '${PROJECT_PREFIX}-${ENV_NAME}-sqlserver')].ARN" --output text || echo "")
+      - echo "PostgreSQL Secret ARN:" $POSTGRESQL_SECRET_ARN
+      - echo "SQL Server Secret ARN:" $SQLSERVER_SECRET_ARN
+      - |
+        if [ -z "$POSTGRESQL_SECRET_ARN" ]; then
+          echo "Warning: PostgreSQL secret not found, removing secrets section"
+          export REMOVE_SECRETS=true
+        else
+          export REMOVE_SECRETS=false
+        fi
+      
+      # Push Frontend Service
+      - echo "=== Pushing Frontend Service ==="
+      - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-frontend:$IMAGE_TAG || echo "Frontend push failed, continuing..."
+      
+      # Push WSO2 Gateway Service
+      - echo "=== Pushing WSO2 Gateway Service ==="
+      - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-wso2-gateway:$IMAGE_TAG || echo "WSO2 Gateway push failed, continuing..."
+      
+      # Push MongoDB Service
+      # - echo "=== Pushing MongoDB Service ==="
+      # - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-mongodb:$IMAGE_TAG || echo "MongoDB push failed, continuing..."
+      
+      # Push Redis Service
+      # - echo "=== Pushing Redis Service ==="
+      # - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-redis:$IMAGE_TAG || echo "Redis push failed, continuing..."
+      
+      # Push API Integration Service
+      # - echo "=== Pushing API Integration Service ==="
+      # - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-api-integration:$IMAGE_TAG || echo "API Integration push failed, continuing..."
+      
+      # Process task definition like buildspec.yml
+      - envsubst < taskdef-template.json > taskdef.json
+      - echo "Task definition content:"
+      - cat taskdef.json
+      - |
+        if [ "$REMOVE_SECRETS" = "true" ]; then
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy, .tags) | .containerDefinitions[0].image = "'$IMAGE_URI'" | del(.containerDefinitions[0].secrets)' taskdef.json > taskdef_tmp.json
+        else
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy, .tags) | .containerDefinitions[0].image = "'$IMAGE_URI'"' taskdef.json > taskdef_tmp.json
+        fi
+      - mv taskdef_tmp.json taskdef.json
+      - echo "Updated task definition:"
+      - cat taskdef.json
+      - NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --query 'taskDefinition.taskDefinitionArn' --output text)
+      - echo "$NEW_TASK_DEF_ARN"
+      - sed -i "s|<TASK_DEFINITION>|$NEW_TASK_DEF_ARN|g" appspec.yml
+      - printf '[{"name":"'$CONTAINER_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+      
+      # Create additional task definitions for other services
+      # - echo "=== Creating Frontend Task Definition ==="
+      # - export FRONTEND_TASK_FAMILY="${PROJECT_PREFIX}-${ENV_NAME}-frontend"
+      # - export FRONTEND_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-frontend:$IMAGE_TAG"
+      # - |
+      #   if [ -f "taskdef-frontend-template.json" ]; then
+      #     envsubst < taskdef-frontend-template.json > taskdef-frontend.json
+      #     echo "Frontend task definition content:"
+      #     cat taskdef-frontend.json
+      #     FRONTEND_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-frontend.json --query 'taskDefinition.taskDefinitionArn' --output text || echo "Frontend task def registration failed")
+      #     echo "Frontend Task Definition ARN:" $FRONTEND_TASK_DEF_ARN
+      #   else
+      #     echo "Frontend task definition template not found, skipping..."
+      #   fi
+      
+      # - echo "=== Creating MongoDB Task Definition ==="
+      # - export MONGODB_TASK_FAMILY="${PROJECT_PREFIX}-${ENV_NAME}-mongodb"
+      # - export MONGODB_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-mongodb:$IMAGE_TAG"
+      # - |
+      #   if [ -f "taskdef-mongodb-template.json" ]; then
+      #     envsubst < taskdef-mongodb-template.json > taskdef-mongodb.json
+      #     echo "MongoDB task definition content:"
+      #     cat taskdef-mongodb.json
+      #     MONGODB_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef-mongodb.json --query 'taskDefinition.taskDefinitionArn' --output text || echo "MongoDB task def registration failed")
+      #     echo "MongoDB Task Definition ARN:" $MONGODB_TASK_DEF_ARN
+      #   else
+      #     echo "MongoDB task definition template not found, skipping..."
+      #   fi
+      
+      - echo "Generated artifacts:"
+      - echo "=== imagedefinitions.json ==="
+      - cat imagedefinitions.json
+      - echo "=== appspec.yml ==="
+      - cat appspec.yml
+      - echo "=== taskdef.json ==="
+      - cat taskdef.json
+      - echo "$IMAGE_URI"
+      - echo "Multi-service build completed successfully"
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - taskdef.json
+    - appspec.yml

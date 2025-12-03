@@ -1,0 +1,42 @@
+{
+  "family": "${MONGODB_TASK_FAMILY}",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "${TASK_CPU}",
+  "memory": "${TASK_MEMORY}",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${MONGODB_TASK_EXECUTION_ROLE}",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${MONGODB_TASK_ROLE}",
+  "containerDefinitions": [
+    {
+      "name": "${MONGODB_CONTAINER_NAME}",
+      "image": "${MONGODB_IMAGE_URI}",
+      "portMappings": [
+        {
+          "containerPort": "${MONGODB_CONTAINER_PORT}",
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/${PROJECT_PREFIX}-${ENV_NAME}-${MONGODB_TASK_FAMILY}",
+          "awslogs-region": "${AWS_DEFAULT_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "MONGO_INITDB_ROOT_USERNAME",
+          "value": "admin"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "MONGO_INITDB_ROOT_PASSWORD",
+          "valueFrom": "${MONGODB_SECRET_ARN}"
+        }
+      ]
+    }
+  ]
+}

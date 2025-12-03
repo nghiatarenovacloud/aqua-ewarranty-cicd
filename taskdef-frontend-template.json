@@ -1,0 +1,47 @@
+{
+  "family": "${FRONTEND_TASK_FAMILY}",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "${TASK_CPU}",
+  "memory": "${TASK_MEMORY}",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${FRONTEND_TASK_EXECUTION_ROLE}",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${FRONTEND_TASK_ROLE}",
+  "containerDefinitions": [
+    {
+      "name": "${FRONTEND_CONTAINER_NAME}",
+      "image": "${IMAGE_URI}",
+      "portMappings": [
+        {
+          "containerPort": "${FRONTEND_CONTAINER_PORT}",
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:${FRONTEND_CONTAINER_PORT}/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/${PROJECT_PREFIX}-${ENV_NAME}-${FRONTEND_TASK_FAMILY}",
+          "awslogs-region": "${AWS_DEFAULT_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "PORT",
+          "value": "${FRONTEND_CONTAINER_PORT}"
+        }
+      ]
+    }
+  ]
+}

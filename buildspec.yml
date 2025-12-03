@@ -1,0 +1,119 @@
+version: 0.2
+
+env:
+  variables:
+    ENV_NAME: "uat"
+    PROJECT_PREFIX: "aqua-cicd-app"
+    TASK_VERSION: "v4"
+    TASK_CPU: "256"
+    TASK_MEMORY: "512"
+    CONTAINER_NAME: "app"
+    CONTAINER_PORT: "8080"
+    RDS_WAIT_ATTEMPTS: "20"
+    RDS_WAIT_INTERVAL: "300"
+
+cache:
+  paths:
+    - '/root/.nuget/packages/**/*'
+
+phases:
+  install:
+    runtime-versions:
+      dotnet: 8.0
+  pre_build:
+    commands:
+      - echo "Starting build process..."
+      - dotnet restore
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - BUILD_NUMBER=${CODEBUILD_BUILD_NUMBER:-1}
+      - IMAGE_TAG="v1.0.${BUILD_NUMBER}-${COMMIT_HASH}"
+      - echo "$IMAGE_TAG"
+  build:
+    commands:
+      - echo "Building application..."
+      - dotnet build --configuration Release --no-restore
+      - dotnet test --configuration Release --no-build --verbosity normal
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo "Deploying..."
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - export IMAGE_URI=$REPOSITORY_URI:$IMAGE_TAG
+      - echo "Waiting for RDS instances to be available..."
+      - export PG_IDENTIFIER="${PROJECT_PREFIX}-${ENV_NAME}-postgresql"
+
+      - export TASK_FAMILY="${PROJECT_PREFIX}-${ENV_NAME}-task-${TASK_VERSION}"
+      - export LOG_GROUP_NAME="${PROJECT_PREFIX}-${ENV_NAME}-${TASK_VERSION}"
+      - export TASK_EXECUTION_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-task-${TASK_VERSION}-execution-role"
+      - export TASK_ROLE="${PROJECT_PREFIX}-${ENV_NAME}-task-${TASK_VERSION}-task-role"
+      - export S3_STATIC_BUCKET="${PROJECT_PREFIX}-${ENV_NAME}-static"
+      - echo "=== RESOLVED VALUES ==="
+      - echo "PostgreSQL Identifier:" $PG_IDENTIFIER
+
+      - echo "Task Family:" $TASK_FAMILY
+      - echo "Task Execution Role:" $TASK_EXECUTION_ROLE
+      - echo "Task Role:" $TASK_ROLE
+      - echo "S3 Static Bucket:" $S3_STATIC_BUCKET
+      - echo "Wait Config:"
+      - echo "$RDS_WAIT_ATTEMPTS attempts every $RDS_WAIT_INTERVAL seconds"
+      - echo "========================"
+      - |
+        for i in $(seq 1 $RDS_WAIT_ATTEMPTS); do
+          PG_STATUS=$(aws rds describe-db-instances --db-instance-identifier $PG_IDENTIFIER --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "not-found")
+          echo "RDS Status (attempt $i/$RDS_WAIT_ATTEMPTS): PostgreSQL=$PG_STATUS"
+          if [ "$PG_STATUS" = "available" ]; then
+            echo "PostgreSQL RDS instance is available"
+            break
+          fi
+          if [ $i -eq $RDS_WAIT_ATTEMPTS ]; then
+            echo "Warning: RDS instances not fully available after $((RDS_WAIT_ATTEMPTS * RDS_WAIT_INTERVAL / 60)) minutes"
+          fi
+          sleep $RDS_WAIT_INTERVAL
+        done
+      - echo "Fetching secret ARNs..."
+      - export POSTGRESQL_SECRET_ARN=$(aws secretsmanager list-secrets --query "SecretList[?contains(Name, '${PROJECT_PREFIX}-${ENV_NAME}-postgresql')].ARN" --output text || echo "")
+
+      - echo "PostgreSQL Secret ARN:" $POSTGRESQL_SECRET_ARN
+
+      - |
+        if [ -z "$POSTGRESQL_SECRET_ARN" ]; then
+          echo "Warning: PostgreSQL secret not found, removing secrets section"
+          export REMOVE_SECRETS=true
+        else
+          export REMOVE_SECRETS=false
+        fi
+      - envsubst < taskdef-template.json > taskdef.json
+      - echo "Task definition content:"
+      - cat taskdef.json
+      - |
+        if [ "$REMOVE_SECRETS" = "true" ]; then
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy, .tags) | .containerDefinitions[0].image = "'$IMAGE_URI'" | del(.containerDefinitions[0].secrets)' taskdef.json > taskdef_tmp.json
+        else
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy, .tags) | .containerDefinitions[0].image = "'$IMAGE_URI'"' taskdef.json > taskdef_tmp.json
+        fi
+      - mv taskdef_tmp.json taskdef.json
+      - echo "Updated task definition:"
+      - cat taskdef.json
+      - NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --query 'taskDefinition.taskDefinitionArn' --output text)
+      - echo "$NEW_TASK_DEF_ARN"
+      - sed -i "s|<TASK_DEFINITION>|$NEW_TASK_DEF_ARN|g" appspec.yml
+      - printf '[{"name":"'$CONTAINER_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+      - echo "Generated artifacts:"
+      - echo "=== imagedefinitions.json ==="
+      - cat imagedefinitions.json
+      - echo "=== appspec.yml ==="
+      - cat appspec.yml
+      - echo "=== taskdef.json ==="
+      - cat taskdef.json
+      - echo "$IMAGE_URI"
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - taskdef.json
+    - appspec.yml
+    - scripts/validate-dependencies.sh
+    - scripts/health-check.sh

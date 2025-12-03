@@ -1,0 +1,61 @@
+{
+  "family": "${BACKEND_TASK_FAMILY}",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "${TASK_CPU}",
+  "memory": "${TASK_MEMORY}",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${BACKEND_TASK_EXECUTION_ROLE}",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${BACKEND_TASK_ROLE}",
+  "containerDefinitions": [
+    {
+      "name": "${CONTAINER_NAME}",
+      "image": "${IMAGE_URI}",
+      "portMappings": [
+        {
+          "containerPort": "${CONTAINER_PORT}",
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:${CONTAINER_PORT}/api/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/${TASK_FAMILY}",
+          "awslogs-region": "${AWS_DEFAULT_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "ASPNETCORE_ENVIRONMENT",
+          "value": "Production"
+        },
+        {
+          "name": "ASPNETCORE_URLS",
+          "value": "http://+:${CONTAINER_PORT}"
+        },
+        {
+          "name": "S3_STATIC_BUCKET",
+          "value": "${S3_STATIC_BUCKET}"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRESQL_CONNECTION",
+          "valueFrom": "${POSTGRESQL_SECRET_ARN}"
+        },
+        {
+          "name": "SQLSERVER_CONNECTION",
+          "valueFrom": "${SQLSERVER_SECRET_ARN}"
+        }
+      ]
+    }
+  ]
+}

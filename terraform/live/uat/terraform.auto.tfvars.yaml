@@ -1,0 +1,580 @@
+aws_region: "ap-southeast-1"
+
+prefix: "aqua"
+project: "cicd"
+workload: "app"
+env: "uat"
+owner: "app-team"
+
+vpc_configs:
+  vpc_cidr_block: "10.200.16.0/20"
+  availability_zones: 
+    - "apse1-az1"
+    - "apse1-az2"
+  app_cidr_blocks:
+    - "10.200.16.0/22"
+    - "10.200.20.0/22"
+  create_app_default_route: true
+  gw_cidr_blocks:
+    - "10.200.28.0/25"
+    - "10.200.28.128/25"
+  create_gw_default_route: true
+  db_cidr_blocks:
+    - "10.200.29.128/27"
+    - "10.200.29.160/27"
+  create_db_default_route: true
+  enable_dns_support: true
+  enable_dns_hostnames: true
+  vpc_flow_logs_traffic_type: "ALL"
+  vpc_flow_logs_retention_in_days: 14
+
+vpc_endpoints:
+  gateway_endpoints:
+    s3:
+      service_name: "s3"
+
+ecr_configs:
+  backend:
+    name: "backend"
+    image_tag_mutability: "MUTABLE"
+    scan_on_push: true
+    force_delete: true
+    lifecycle_policy:
+      rules:
+        - rulePriority: 1
+          description: "Keep last 20 tagged images"
+          selection:
+            tagStatus: "tagged"
+            tagPrefixList: ["v"]
+            countType: "imageCountMoreThan"
+            countNumber: 20
+          action:
+            type: "expire"
+        - rulePriority: 2
+          description: "Keep untagged images for 1 day"
+          selection:
+            tagStatus: "untagged"
+            countType: "sinceImagePushed"
+            countUnit: "days"
+            countNumber: 1
+          action:
+            type: "expire"
+  frontend:
+    name: "frontend"
+    image_tag_mutability: "MUTABLE"
+    scan_on_push: true
+    force_delete: true
+    lifecycle_policy:
+      rules:
+        - rulePriority: 1
+          description: "Keep last 20 tagged images"
+          selection:
+            tagStatus: "tagged"
+            tagPrefixList: ["v"]
+            countType: "imageCountMoreThan"
+            countNumber: 20
+          action:
+            type: "expire"
+        - rulePriority: 2
+          description: "Keep untagged images for 1 day"
+          selection:
+            tagStatus: "untagged"
+            countType: "sinceImagePushed"
+            countUnit: "days"
+            countNumber: 1
+          action:
+            type: "expire"
+
+s3_configs:
+  elb:
+    name: "elb"
+    bucket_versioning: "Enabled"
+    encryption_type: "sse-s3"
+    force_destroy: true
+  artifacts:
+    name: "artifacts"
+    bucket_versioning: "Enabled"
+    encryption_type: "kms"
+    force_destroy: true
+
+elb_configs:
+  backend_alb:
+    name: "backend-alb"
+    internal: true
+    load_balancer_type: "application"
+    enable_deletion_protection: false
+    enable_cross_zone_load_balancing: true
+    idle_timeout: 60
+    # Access logs (will be set dynamically from s3_configs)
+    enable_access_logs: true
+    target_groups:
+      backend-blue:
+        port: 8080
+        protocol: "HTTP"
+        target_type: "ip"
+        health_check_path: "/api/health"
+      backend-green:
+        port: 8080
+        protocol: "HTTP"
+        target_type: "ip"
+        health_check_path: "/api/health"
+    listeners:
+      backend:
+        port: 8080
+        protocol: "HTTP"
+        default_action:
+          type: "forward"
+          target_groups:
+            - target_group_key: "backend-blue"
+              weight: 100
+            - target_group_key: "backend-green"
+              weight: 0
+    security_group_rules:
+      ingress:
+        - description: "Allow traffic from ECS Backend SG"
+          from_port: 8080
+          to_port: 8080
+          protocol: "tcp"
+          cidr_blocks: ["10.200.16.0/20"]
+      egress:
+        - description: "All outbound"
+          from_port: 0
+          to_port: 0
+          protocol: "-1"
+          cidr_blocks: ["0.0.0.0/0"]
+  frontend_alb:
+    name: "frontend-alb"
+    internal: false
+    load_balancer_type: "application"
+    enable_deletion_protection: false
+    target_groups:
+      frontend-blue:
+        port: 3000
+        protocol: "HTTP"
+        target_type: "ip"
+        health_check_path: "/"
+      frontend-green:
+        port: 3000
+        protocol: "HTTP"
+        target_type: "ip"
+        health_check_path: "/"
+    listeners:
+      https:
+        port: 443
+        protocol: "HTTPS"
+        ssl_policy: "ELBSecurityPolicy-TLS13-1-2-2021-06"
+        certificate_id: "eca6f1db-35bb-4b53-b236-addd515c3744"
+        default_action:
+          type: "forward"
+          target_groups:
+            - target_group_key: "frontend-blue"
+              weight: 100
+            - target_group_key: "frontend-green"
+              weight: 0
+      http:
+        port: 80
+        protocol: "HTTP"
+        default_action:
+          type: "redirect"
+          redirect:
+            protocol: "HTTPS"
+            port: "443"
+            status_code: "HTTP_301"
+    security_group_rules:
+      ingress:
+        - description: "Allow traffic from anywhere on HTTP"
+          from_port: 80
+          to_port: 80
+          protocol: "tcp"
+          cidr_blocks: ["0.0.0.0/0"]
+        - description: "Allow traffic from anywhere on HTTPS"
+          from_port: 443
+          to_port: 443
+          protocol: "tcp"
+          cidr_blocks: ["0.0.0.0/0"]
+      egress:
+        - description: "All outbound"
+          from_port: 0
+          to_port: 0
+          protocol: "-1"
+          cidr_blocks: ["0.0.0.0/0"]
+
+ecs_configs:
+  cluster:
+    name: "cluster"
+    enable_container_insights: true
+    enable_execute_command: true
+  
+  security_groups:
+    backend:
+      name: "ecs-backend"
+      security_group_rules:
+        ingress:
+          - description: "Allow traffic to Backend (ALB + Frontend)"
+            from_port: 8080
+            to_port: 8080
+            protocol: "tcp"
+            cidr_blocks: ["10.200.28.0/25", "10.200.28.128/25", "10.200.16.0/22", "10.200.20.0/22"]
+        egress:
+          - description: "All outbound"
+            from_port: 0
+            to_port: 0
+            protocol: "-1"
+            cidr_blocks: ["0.0.0.0/0"]
+    frontend:
+      name: "ecs-frontend"
+      security_group_rules:
+        ingress:
+          - description: "ALB to Frontend"
+            from_port: 3000
+            to_port: 3000
+            protocol: "tcp"
+            cidr_blocks: ["10.200.28.0/25", "10.200.28.128/25"]
+        egress:
+          - description: "All outbound"
+            from_port: 0
+            to_port: 0
+            protocol: "-1"
+            cidr_blocks: ["0.0.0.0/0"]
+
+  services:
+    backend:
+      task_family: "backend-task"
+      log_retention_days: 1
+      containers:
+        - name: "backend"
+          image: "879654127886.dkr.ecr.ap-southeast-1.amazonaws.com/aqua-cicd-app-uat-backend:latest"
+          cpu: 256
+          memory: 512
+          essential: true
+          port_mappings:
+            - containerPort: 8080
+              protocol: "tcp"
+              name: "backend"
+          environment:
+            - name: "NODE_ENV"
+              value: "production"
+            - name: "PORT"
+              value: "8080"
+          secrets:
+            - name: "DATABASE_URL"
+              valueFrom: "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:mock-secret-name"
+          healthCheck:
+            command: ["CMD-SHELL", "curl -f http://localhost:8080/api/health || exit 1"]
+            interval: 30
+            timeout: 5
+            retries: 3
+            start_period: 60
+      service:
+        name: "backend"
+        desired_count: 1
+        deployment_controller_type: "ECS"
+        launch_type: "FARGATE"
+        cpu: "256"
+        memory: "512"
+        assign_public_ip: false
+        enable_load_balancer: true
+        container_name: "backend"
+        container_port: 8080
+        enable_service_connect: true
+        service_connect_configuration:
+          enabled: true
+          namespace: null
+          services:
+            - port_name: "backend"
+              discovery_name: "backend"
+              client_alias:
+                port: 80
+                dns_name: "backend"
+
+    frontend:
+      task_family: "frontend-task"
+      log_retention_days: 1
+      containers:
+      - name: "frontend"
+        image: "879654127886.dkr.ecr.ap-southeast-1.amazonaws.com/aqua-cicd-app-uat-frontend:latest"
+        cpu: 256
+        memory: 512
+        essential: true
+        port_mappings:
+          - containerPort: 3000
+            protocol: "tcp"
+            name: "frontend"
+        environment:
+          - name: "NODE_ENV"
+            value: "production"
+          - name: "PORT"
+            value: "3000"
+          - name: "NEXT_PUBLIC_API_URL"
+            value: "http://backend:8080"
+        hehealthCheck:
+          command: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+          interval: 30
+          timeout: 5
+          retries: 3
+          start_period: 60
+      service:
+        name: "frontend"
+        desired_count: 1
+        deployment_controller_type: "CODE_DEPLOY"
+        launch_type: "FARGATE"
+        cpu: "256"
+        memory: "512"
+        assign_public_ip: false
+        enable_load_balancer: true
+        container_name: "frontend"
+        container_port: 3000
+        enable_service_connect: false
+
+codedeploy_configs:
+  frontend:
+    name: "frontend"
+    compute_platform: "ECS"
+    
+    # Enable/Disable Features
+    enable_custom_deployment_config: false
+    enable_deployment_style: true
+    enable_additional_permissions: true
+    enable_alarm_configuration: false
+    enable_trigger_configuration: false
+    
+    # Deployment Configuration (if enable_custom_deployment_config = false)
+    deployment_config_name: "CodeDeployDefault.ECSAllAtOnce"  # Options: ECSAllAtOnce, ECSLinear10PercentEvery1Minutes, ECSLinear10PercentEvery3Minutes, ECSCanary10Percent5Minutes, ECSCanary10Percent15Minutes
+    
+    # Traffic Routing (only if enable_custom_deployment_config = true)
+    traffic_routing_config:
+      type: "AllAtOnce"  # Options: TimeBasedCanary, TimeBasedLinear, AllAtOnce
+      time_based_linear:
+        interval: 1    # Minutes between increments
+        percentage: 10 # Percentage per increment
+      # time_based_canary:
+      #   interval: 5    # Minutes between first and second shift
+      #   percentage: 10 # Percentage for first shift
+    
+    # Deployment Style
+    deployment_style:
+      deployment_option: "WITH_TRAFFIC_CONTROL"  # Options: WITH_TRAFFIC_CONTROL, WITHOUT_TRAFFIC_CONTROL
+      deployment_type: "BLUE_GREEN"              # Options: BLUE_GREEN, IN_PLACE
+    
+    # CloudWatch Alarms (optional)
+    alarm_configuration:
+      enabled: false
+      alarms: []  # List of CloudWatch alarm names
+      ignore_poll_alarm_failure: false
+    
+    # SNS Triggers (optional)
+    trigger_configurations: []
+    # Example:
+    # - trigger_name: "deployment-notifications"
+    #   trigger_events: ["DeploymentStart", "DeploymentSuccess", "DeploymentFailure"]
+    #   trigger_target_arn: "arn:aws:sns:region:account:topic-name"
+    
+    deployment_group:
+      name: "frontend-dg"
+      auto_rollback_enabled: true
+      auto_rollback_events: ["DEPLOYMENT_FAILURE", "DEPLOYMENT_STOP_ON_ALARM"]
+      
+      blue_green_deployment_config:
+        terminate_blue_instances_on_deployment_success:
+          action: "TERMINATE"  # Options: TERMINATE, KEEP_ALIVE
+          termination_wait_time_in_minutes: 5
+        deployment_ready_option:
+          action_on_timeout: "CONTINUE_DEPLOYMENT"  # Options: CONTINUE_DEPLOYMENT, STOP_DEPLOYMENT
+          # wait_time_in_minutes: 60  # Only for STOP_DEPLOYMENT
+        # green_fleet_provisioning_option not supported for ECS platform
+      
+      ecs_service:
+        cluster_name: ""  # Will be populated by dependency
+        service_name: ""  # Will be populated by dependency
+      
+      load_balancer_info:
+        target_group_keys: []  # Empty for ECS - use target_group_pair_info instead
+        target_group_pair_info:
+          prod_traffic_route:
+            listener_arns: []  # Will be populated by dependency
+          target_groups:
+            - name: ""  # blue target group name - will be populated by dependency
+            - name: ""  # green target group name - will be populated by dependency
+
+rds_configs:
+  postgresql:
+    name: "postgresql"
+    engine: "postgres"
+    engine_version: "15.15"
+    instance_class: "db.t3.micro"
+    allocated_storage: 20
+    storage_type: "gp3"
+    database_name: "ewarranty"
+    username: "postgres"
+    port: 5432
+    backup_retention_period: 7
+    backup_window: "03:00-04:00"
+    maintenance_window: "sun:04:00-sun:05:00"
+    multi_az: false
+    publicly_accessible: false
+    storage_encrypted: true
+    deletion_protection: false
+    skip_final_snapshot: true
+    performance_insights_enabled: false
+    monitoring_interval: 0
+    enabled_cloudwatch_logs_exports: ["postgresql"]
+    allowed_cidr_blocks:
+    - "10.200.16.0/22"
+    - "10.200.20.0/22"
+    family: "postgres15"
+    db_parameter_group_parameters: []
+    master_username: "postgres"
+    db_init_name: "ewarranty"
+    availability_zone: "ap-southeast-1a"
+    max_allocated_storage: 100
+    preferred_maintenance_window: "sun:04:00-sun:05:00"
+    preferred_backup_window: "03:00-04:00"
+    enabled_multi_az: false
+    apply_immediately: false
+
+kms_configs:
+  cw_key_backend:
+    name: "cloudWatch_key_backend"
+    description: "KMS key for CloudWatch Logs"
+    enable_key_rotation: true
+    rotation_period_in_days: 180
+    alias_name: "alias/cloudWatch_key_backend"
+  cw_key_frontend:
+    name: "cloudWatch_key_frontend"
+    description: "KMS key for CloudWatch Logs"
+    enable_key_rotation: true
+    rotation_period_in_days: 180
+    alias_name: "alias/cloudWatch_key_frontend"
+  s3_artifacts_key:
+    name: "s3_artifacts_key"
+    description: "KMS key for S3 Artifacts Bucket"
+    enable_key_rotation: true
+    rotation_period_in_days: 180
+    alias_name: "alias/s3_artifacts_key"
+
+codebuild_configs:
+  backend:
+    name: "backend"
+    description: "CodeBuild project for building backend application"
+    build_timeout: 30
+    compute_type: "BUILD_GENERAL1_SMALL"
+    environment_image: "aws/codebuild/standard:5.0"
+    source_type: "NO_SOURCE"
+    artifacts_type: "NO_ARTIFACTS"
+    enable_log_encryption: true
+    enable_vpc: false
+    environment_variables:
+      AWS_DEFAULT_REGION:
+        value: "ap-southeast-1"
+        type: "PLAINTEXT"
+      AWS_ACCOUNT_ID:
+        value: "123456789012"
+        type: "PLAINTEXT"
+      IMAGE_REPO_NAME:
+        value: "backend"
+        type: "PLAINTEXT"
+  frontend:
+    name: "frontend"
+    description: "CodeBuild project for building frontend application"
+    build_timeout: 30
+    compute_type: "BUILD_GENERAL1_SMALL"
+    environment_image: "aws/codebuild/standard:5.0"
+    source_type: "NO_SOURCE"
+    artifacts_type: "NO_ARTIFACTS"
+    enable_vpc: false
+    environment_variables:
+      AWS_DEFAULT_REGION:
+        value: "ap-southeast-1"
+        type: "PLAINTEXT"
+      AWS_ACCOUNT_ID:
+        value: "123456789012"
+        type: "PLAINTEXT"
+      IMAGE_REPO_NAME:
+        value: "frontend"
+        type: "PLAINTEXT"
+
+sns_configs:
+  sns_topic_approval:
+    name: "frontend-sns-topic-approval"
+    display_name: "SNS Topic for FrontendApproval Notifications"
+  pipeline_notifications:
+    name: "frontend-pipeline-notifications"
+    display_name: "Frontend Pipeline Notifications"
+  
+codestar_connections_configs:
+  github:
+    name: "github"
+    provider_type: "GitHub"
+codestar_notifications_configs:
+  pipeline_notification:
+    name: "frontend-pipeline-notifications"
+    detail_type: "FULL"
+    resource_arn: "dependency.codepipeline.outputs.pipeline_arn"
+    event_type_ids:
+      - "codepipeline-pipeline-pipeline-execution-failed"
+      - "codepipeline-pipeline-pipeline-execution-succeeded"
+      - "codepipeline-pipeline-pipeline-execution-canceled"
+      - "codepipeline-pipeline-pipeline-execution-superseded"
+    targets:
+      - type: "SNS"
+        address: "dependency.sns.outputs.codepipeline_notifications_topic_arn"
+
+codepipeline_configs:
+  frontend_pipeline:
+    name: "frontend-pipeline"
+    artifact_bucket_name: "dependency.s3.outputs.id" # S3 Artifacts Bucket
+    kms_key_id: "dependency.kms.outputs.key_arn" # KMS Key for CodePipeline
+    approval_actions:
+      uat_approval:
+        stage_name: "Deploy"
+        action_name: "UATApproval"
+        sns_topic_arn: "dependency.sns.outputs.topic_arn"
+        custom_data: "Please review the deployment to uat"
+        run_order: 1
+    enable_trigger: true
+    trigger_config:
+      provider_type: "CodeStarSourceConnection"
+      source_action_name: "Source"
+      push:
+        branches:
+          include: ["feature/full-application-v1"]
+        # file_paths:
+        #   includes: ["examples/github+tf_oss/**"]
+    stages:
+      - name: "Source"
+        actions:
+          - name: "Source"
+            category: "Source"
+            owner: "AWS"
+            provider: "CodeStarSourceConnection"
+            version: "1"
+            output_artifacts: ["SourceArtifact"]
+            configuration:
+              ConnectionArn: "dependency.codestar_connections.outputs.connection_arn"
+              FullRepositoryId: "nghiatarenovacloud/aqua-ewarranty-cicd"
+              BranchName: "main"
+      - name: "Build"
+        actions:
+          - name: "Build"
+            category: "Build"
+            owner: "AWS"
+            provider: "CodeBuild"
+            version: "1"
+            input_artifacts: ["SourceArtifact"]
+            output_artifacts: ["BuildArtifact"]
+            configuration:
+              ProjectName: "dependency.codebuild_build.outputs.project_arn"
+      - name: "Deploy"
+        actions:
+          - name: "Deploy"
+            category: "Deploy"
+            owner: "AWS"
+            provider: "CodeDeploy"
+            version: "1"
+            input_artifacts: ["BuildArtifact"]
+            output_artifacts: []
+            role_arn: null
+            run_order: 2
+            configuration:
+              ApplicationName: "dependency.codedeploy.outputs.application_arn"
+              DeploymentGroupName: "dependency.codedeploy.outputs.deployment_group_arn"
