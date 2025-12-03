@@ -1,6 +1,6 @@
 # AQUA E-WARRANTY CI/CD Infrastructure
 
-AWS Infrastructure as Code (IaC) with Terraform and Terragrunt for AQUA E-WARRANTY application deployment using ECS Fargate, CodePipeline, and CodeDeploy.
+<!-- AWS Infrastructure as Code (IaC) with Terraform and Terragrunt for AQUA E-WARRANTY application deployment using ECS Fargate, CodePipeline, and CodeDeploy. -->
 
 ## 🏗️ Architecture Overview
 
