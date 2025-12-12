@@ -2,8 +2,9 @@ version: 0.2
 
 # env variables passed from Terraform/CodeBuild project config:
 # - ENV_NAME, PROJECT_PREFIX, AWS_DEFAULT_REGION, AWS_ACCOUNT_ID
-# - DOTNET_VERSION, BUILD_CONFIG, SERVICE_NAME, SOURCE_PATH
+# - DOTNET_VERSION, BUILD_CONFIG, SERVICE_NAME, SOURCE_PATH, IMAGE_REPO_NAME
 # - TASK_CPU, TASK_MEMORY, CONTAINER_PORT
+# - TASK_FAMILY, TASK_EXECUTION_ROLE, TASK_ROLE, S3_STATIC_BUCKET
 
 cache:
   paths:
@@ -27,13 +28,14 @@ phases:
     commands:
       - dotnet build $SOURCE_PATH --configuration $BUILD_CONFIG --no-restore
       - dotnet test $SOURCE_PATH --configuration $BUILD_CONFIG --no-build --verbosity normal
-      - docker build -t $SERVICE_NAME:$IMAGE_TAG -f ${SOURCE_PATH}Dockerfile $SOURCE_PATH
-      - docker tag $SERVICE_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
+      - cd ../..
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG -f ${SOURCE_PATH}Dockerfile $SOURCE_PATH
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
   
   post_build:
     commands:
-      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
-      - export IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - export IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
       
       - echo "Tracking deployment..."
       - DEPLOYMENT_INFO="{\"service\":\"$SERVICE_NAME\",\"image_tag\":\"$IMAGE_TAG\",\"deployed_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"commit\":\"$COMMIT_HASH\"}"
@@ -44,12 +46,13 @@ phases:
       - echo "PostgreSQL Secret:$POSTGRESQL_SECRET_ARN"
       
       - echo "Updating task definition..."
+      - export SQLSERVER_SECRET_ARN=""
       - envsubst < taskdef-backend-template.json > taskdef.json
       - |
         if [ -z "$POSTGRESQL_SECRET_ARN" ]; then
-          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | del(.containerDefinitions[0].secrets)' taskdef.json > taskdef_tmp.json
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | del(.containerDefinitions[0].secrets) | .containerDefinitions[0].portMappings[0].containerPort=(.containerDefinitions[0].portMappings[0].containerPort|tonumber) | .cpu=(.cpu|tostring) | .memory=(.memory|tostring)' taskdef.json > taskdef_tmp.json
         else
-          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'"' taskdef.json > taskdef_tmp.json
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | .containerDefinitions[0].portMappings[0].containerPort=(.containerDefinitions[0].portMappings[0].containerPort|tonumber) | .cpu=(.cpu|tostring) | .memory=(.memory|tostring)' taskdef.json > taskdef_tmp.json
         fi
       - mv taskdef_tmp.json taskdef.json
       - NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --query 'taskDefinition.taskDefinitionArn' --output text)

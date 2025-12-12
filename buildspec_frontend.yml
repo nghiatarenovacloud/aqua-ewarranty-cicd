@@ -3,8 +3,8 @@ version: 0.2
 # env variables passed from Terraform/CodeBuild project config:
 # - ENV_NAME, PROJECT_PREFIX, AWS_DEFAULT_REGION, AWS_ACCOUNT_ID
 # - NODEJS_VERSION, BUILD_CONFIG, SERVICE_NAME, SOURCE_PATH, IMAGE_REPO_NAME
-# - TASK_CPU, TASK_MEMORY, CONTAINER_PORT
-# - TASK_FAMILY, TASK_EXECUTION_ROLE, TASK_ROLE, S3_STATIC_BUCKET
+# - TASK_CPU, TASK_MEMORY, CONTAINER_PORT, CONTAINER_NAME
+# - TASK_FAMILY, TASK_EXECUTION_ROLE, TASK_ROLE
 
 cache:
   paths:
@@ -45,12 +45,12 @@ phases:
       
       - echo "Updating task definition..."
       - envsubst < taskdef-frontend-template.json > taskdef.json
-      - jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags,.containerDefinitions[0].secrets) | .containerDefinitions[0].image="'$IMAGE_URI'" | .containerDefinitions[0].portMappings[0].containerPort=(.containerDefinitions[0].portMappings[0].containerPort|tonumber) | .cpu=(.cpu|tostring) | .memory=(.memory|tostring)' taskdef.json > taskdef_tmp.json
+      - jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | .containerDefinitions[0].portMappings[0].containerPort=(.containerDefinitions[0].portMappings[0].containerPort|tonumber) | .cpu=(.cpu|tostring) | .memory=(.memory|tostring)' taskdef.json > taskdef_tmp.json
       - mv taskdef_tmp.json taskdef.json
       - NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --query 'taskDefinition.taskDefinitionArn' --output text)
       - echo "Task Definition:$NEW_TASK_DEF_ARN"
       - sed -i "s|<TASK_DEFINITION>|$NEW_TASK_DEF_ARN|g" appspec.yml
-      - printf '[{"name":"'$SERVICE_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+      - printf '[{"name":"'$CONTAINER_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
 
 artifacts:
   files:
