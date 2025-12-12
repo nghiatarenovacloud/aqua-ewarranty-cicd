@@ -44,7 +44,7 @@ phases:
       - echo "PostgreSQL Secret:$POSTGRESQL_SECRET_ARN"
       
       - echo "Updating task definition..."
-      - envsubst < taskdef-template.json > taskdef.json
+      - envsubst < taskdef-backend-template.json > taskdef.json
       - |
         if [ -z "$POSTGRESQL_SECRET_ARN" ]; then
           jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | del(.containerDefinitions[0].secrets)' taskdef.json > taskdef_tmp.json

@@ -1,24 +1,24 @@
 {
-  "family": "${FRONTEND_TASK_FAMILY}",
+  "family": "${TASK_FAMILY}",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "${TASK_CPU}",
   "memory": "${TASK_MEMORY}",
-  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${FRONTEND_TASK_EXECUTION_ROLE}",
-  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${FRONTEND_TASK_ROLE}",
+  "executionRoleArn": "${TASK_EXECUTION_ROLE}",
+  "taskRoleArn": "${TASK_ROLE}",
   "containerDefinitions": [
     {
-      "name": "${FRONTEND_CONTAINER_NAME}",
+      "name": "${CONTAINER_NAME}",
       "image": "${IMAGE_URI}",
       "portMappings": [
         {
-          "containerPort": "${FRONTEND_CONTAINER_PORT}",
+          "containerPort": "${CONTAINER_PORT}",
           "protocol": "tcp"
         }
       ],
       "essential": true,
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:${FRONTEND_CONTAINER_PORT}/health || exit 1"],
+        "command": ["CMD-SHELL", "curl -f http://localhost:${CONTAINER_PORT}/health || exit 1"],
         "interval": 30,
         "timeout": 5,
         "retries": 3,
@@ -27,7 +27,7 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/${PROJECT_PREFIX}-${ENV_NAME}-${FRONTEND_TASK_FAMILY}",
+          "awslogs-group": "/ecs/${IMAGE_REPO_NAME}",
           "awslogs-region": "${AWS_DEFAULT_REGION}",
           "awslogs-stream-prefix": "ecs"
         }
@@ -39,7 +39,7 @@
         },
         {
           "name": "PORT",
-          "value": "${FRONTEND_CONTAINER_PORT}"
+          "value": "${CONTAINER_PORT}"
         }
       ]
     }

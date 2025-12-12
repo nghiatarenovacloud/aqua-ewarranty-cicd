@@ -1,11 +1,11 @@
 {
-  "family": "${BACKEND_TASK_FAMILY}",
+  "family": "${TASK_FAMILY}",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "${TASK_CPU}",
   "memory": "${TASK_MEMORY}",
-  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${BACKEND_TASK_EXECUTION_ROLE}",
-  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${BACKEND_TASK_ROLE}",
+  "executionRoleArn": "${TASK_EXECUTION_ROLE}",
+  "taskRoleArn": "${TASK_ROLE}",
   "containerDefinitions": [
     {
       "name": "${CONTAINER_NAME}",
@@ -40,10 +40,6 @@
         {
           "name": "ASPNETCORE_URLS",
           "value": "http://+:${CONTAINER_PORT}"
-        },
-        {
-          "name": "S3_STATIC_BUCKET",
-          "value": "${S3_STATIC_BUCKET}"
         }
       ],
       "secrets": [
