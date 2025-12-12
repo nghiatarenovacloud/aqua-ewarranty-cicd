@@ -1,0 +1,64 @@
+version: 0.2
+
+# env variables passed from Terraform/CodeBuild project config:
+# - ENV_NAME, PROJECT_PREFIX, AWS_DEFAULT_REGION, AWS_ACCOUNT_ID
+# - DOTNET_VERSION, BUILD_CONFIG, SERVICE_NAME, SOURCE_PATH
+# - TASK_CPU, TASK_MEMORY, CONTAINER_PORT
+
+cache:
+  paths:
+    - '/root/.nuget/packages/**/*'
+
+phases:
+  install:
+    runtime-versions:
+      dotnet: ${DOTNET_VERSION}
+  
+  pre_build:
+    commands:
+      - echo "Building $SERVICE_NAME Service..."
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG="v1.0.${CODEBUILD_BUILD_NUMBER:-1}-${COMMIT_HASH}"
+      - echo "Image tag:$IMAGE_TAG"
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - dotnet restore $SOURCE_PATH
+  
+  build:
+    commands:
+      - dotnet build $SOURCE_PATH --configuration $BUILD_CONFIG --no-restore
+      - dotnet test $SOURCE_PATH --configuration $BUILD_CONFIG --no-build --verbosity normal
+      - docker build -t $SERVICE_NAME:$IMAGE_TAG -f ${SOURCE_PATH}Dockerfile $SOURCE_PATH
+      - docker tag $SERVICE_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
+  
+  post_build:
+    commands:
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
+      - export IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/${PROJECT_PREFIX}-${ENV_NAME}-${SERVICE_NAME}:$IMAGE_TAG
+      
+      - echo "Tracking deployment..."
+      - DEPLOYMENT_INFO="{\"service\":\"$SERVICE_NAME\",\"image_tag\":\"$IMAGE_TAG\",\"deployed_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"commit\":\"$COMMIT_HASH\"}"
+      - aws ssm put-parameter --name "/${PROJECT_PREFIX}/${ENV_NAME}/deployments/${SERVICE_NAME}/latest" --value "$DEPLOYMENT_INFO" --type String --overwrite
+      
+      - echo "Fetching secrets..."
+      - POSTGRESQL_SECRET_ARN=$(aws secretsmanager list-secrets --query "SecretList[?contains(Name,'${PROJECT_PREFIX}-${ENV_NAME}-postgresql')].ARN" --output text || echo "")
+      - echo "PostgreSQL Secret:$POSTGRESQL_SECRET_ARN"
+      
+      - echo "Updating task definition..."
+      - envsubst < taskdef-template.json > taskdef.json
+      - |
+        if [ -z "$POSTGRESQL_SECRET_ARN" ]; then
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'" | del(.containerDefinitions[0].secrets)' taskdef.json > taskdef_tmp.json
+        else
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.tags) | .containerDefinitions[0].image="'$IMAGE_URI'"' taskdef.json > taskdef_tmp.json
+        fi
+      - mv taskdef_tmp.json taskdef.json
+      - NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --query 'taskDefinition.taskDefinitionArn' --output text)
+      - echo "Task Definition:$NEW_TASK_DEF_ARN"
+      - sed -i "s|<TASK_DEFINITION>|$NEW_TASK_DEF_ARN|g" appspec.yml
+      - printf '[{"name":"'$SERVICE_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - taskdef.json
+    - appspec.yml
